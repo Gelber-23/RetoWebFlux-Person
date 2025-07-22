@@ -1,0 +1,15 @@
+spring:
+  r2dbc:
+    url: r2dbc:mysql://localhost:3306/retowebflux
+    username: root
+    password: 123456789
+  main:
+    allow-bean-definition-overriding: true
+
+server:
+  port: 8083
+
+appDescription: "Person System"
+appVersion: "1.0"
+client:
+  bootcamp: "http://localhost:8082/bootcamp"
