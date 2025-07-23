@@ -5,8 +5,10 @@ import com.pragma.person.domain.exception.*;
 import com.pragma.person.domain.model.Person;
 import com.pragma.person.domain.model.PersonRegisterBootcampRequest;
 import com.pragma.person.domain.model.web.Bootcamp;
+import com.pragma.person.domain.model.web.PersonInfoReport;
 import com.pragma.person.domain.spi.IPersonPersistencePort;
 import com.pragma.person.domain.spi.web.IBootcampClientPort;
+import com.pragma.person.domain.spi.web.IReportClientPort;
 import com.pragma.person.domain.util.ExceptionConstans;
 import com.pragma.person.domain.util.ValueConstants;
 import reactor.core.publisher.Flux;
@@ -23,10 +25,12 @@ public class PersonUseCase implements IPersonServicePort {
 
     private final IPersonPersistencePort personPersistencePort;
     private final IBootcampClientPort bootcampClientPort;
+    private final IReportClientPort reportClientPort;
 
-    public PersonUseCase(IPersonPersistencePort personPersistencePort, IBootcampClientPort bootcampClientPort) {
+    public PersonUseCase(IPersonPersistencePort personPersistencePort, IBootcampClientPort bootcampClientPort, IReportClientPort reportClientPort) {
         this.personPersistencePort = personPersistencePort;
         this.bootcampClientPort = bootcampClientPort;
+        this.reportClientPort = reportClientPort;
     }
 
     @Override
@@ -36,32 +40,42 @@ public class PersonUseCase implements IPersonServicePort {
 
         return validateRequestBootcamps(personRegisterBootcampRequest)
                 .then(validatePersonExists(personId))
-                // En lugar de zipWith(count…), primero obtenemos la lista actual:
+
                 .then(fetchExistingBootcamps(personId))
                 .flatMap(existingList -> {
                     int currentCount = existingList.size();
                     int incomingCount = incomingIds.size();
 
-                    // 1) Validar máximo permitido:
+
                     return checkMaxAllowed(currentCount, incomingCount)
-                            // 2) Obtener lista de nuevos bootcamps a registrar:
+
                             .then(fetchNewBootcamps(incomingIds))
-                            // 3) Juntar ambas listas para validaciones posteriores:
+
                             .map(newList -> Tuples.of(existingList, newList));
                 })
-                // 4) Validar duplicados
+
                 .flatMap(tuple -> verifyNoDuplicates(tuple.getT1(), tuple.getT2()).thenReturn(tuple))
-                // 5) Validar solapamientos
+
                 .flatMap(tuple -> verifyNoOverlap(tuple.getT1(), tuple.getT2()).thenReturn(tuple))
-                // 6) Finalmente, persistir y devolver persona con bootcamps
+
                 .flatMap(tuple -> personPersistencePort
                         .registerInBootcamps(personId, incomingIds)
-                );
+                ) .doOnSuccess(updated -> {
+
+                    PersonInfoReport evt = mapToPersonInfo(updated);
+                    reportClientPort.createDataPersonReport(evt).subscribe();
+                });
     }
     @Override
     public Mono<Person> registerPerson(Person person) {
         return validateDataPerson(person)
-                .flatMap(personPersistencePort::save);
+                .flatMap(personPersistencePort::save)
+                .doOnSuccess(updated -> {
+
+                    PersonInfoReport evt = mapToPersonInfo(updated);
+                        reportClientPort.createDataPersonReport(evt).subscribe();
+                });
+
     }
 
     @Override
@@ -120,9 +134,6 @@ public class PersonUseCase implements IPersonServicePort {
                 .then();
     }
 
-    private Mono<Long> countCurrentBootcamps(Long personId) {
-        return personPersistencePort.countByPersonId(personId);
-    }
 
     private Mono<Void> checkMaxAllowed(long current, int incoming) {
         if (current + incoming > ValueConstants.MAX_COUNT_BOOTCAMP) {
@@ -180,5 +191,15 @@ public class PersonUseCase implements IPersonServicePort {
         }
         return Mono.empty();
     }
-
+    private PersonInfoReport mapToPersonInfo(Person entity) {
+        return new PersonInfoReport(
+                entity.getId(),
+                entity.getName(),
+                entity.getEmail(),
+                entity.getAge(),
+                entity.getBootcamps().stream()
+                        .map(Bootcamp::getId)
+                        .toList()
+        );
+    }
 }
